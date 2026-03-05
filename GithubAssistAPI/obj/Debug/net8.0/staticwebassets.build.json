@@ -1,0 +1,11 @@
+{
+  "Version": 1,
+  "Hash": "aDozlsSWK2gLmOCXb4QPYwiC+wCacUVJ9EAAP2UyIcw=",
+  "Source": "GithubAssistAPI",
+  "BasePath": "_content/GithubAssistAPI",
+  "Mode": "Default",
+  "ManifestType": "Build",
+  "ReferencedProjectsConfiguration": [],
+  "DiscoveryPatterns": [],
+  "Assets": []
+}

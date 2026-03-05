@@ -15,7 +15,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 
 // Register your services
-builder.Services.AddScoped<IDeprecateService, DeprecateService>();
+builder.Services.AddScoped<IDeprecationService, DeprecationService>();
 builder.Services.AddScoped<IBranchService, BranchService>();
 builder.Services.AddScoped<ISearchService, SearchService>();
 builder.Services.AddScoped<IGitHubService, GitHubService>();

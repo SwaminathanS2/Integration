@@ -1,9 +1,15 @@
+
 // src/pages/Home.js
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Link, useLocation } from "react-router-dom";
 import questions from "../data/questions.json";
 import { FeatureFilesCard, searchFeatureFiles } from "../components/search";
 import { FeatureFileViewer, viewRawFile } from "../components/view";
+import {
+  deprecateFeatureSwitch,
+  toFilePaths,
+  DEFAULT_FILES_STORAGE_KEY,
+} from "../components/deprecate";
 
 /* --------------------------- Config helpers --------------------------- */
 const getConfig = () => {
@@ -13,6 +19,10 @@ const getConfig = () => {
     return {};
   }
 };
+
+/* --------------------------- Helpers --------------------------- */
+const isYes = (text) => /^y(?:es)?$/i.test((text || "").trim());
+const isNo = (text) => /^n(?:o)?$/i.test((text || "").trim());
 
 export default function Home() {
   const location = useLocation();
@@ -25,9 +35,14 @@ export default function Home() {
   const [messages, setMessages] = useState([]);
   const [showWelcome, setShowWelcome] = useState(true);
   const [toast, setToast] = useState(null); // { text, type: 'success'|'error' }
-  const [, setFeatureName] = useState(""); // setter only; avoids ESLint when unused
 
-  // Viewer state (right-side drawer)
+  // Domain state
+  const [featureName, setFeatureName] = useState("");
+  const [foundFiles, setFoundFiles] = useState([]);
+  const [deprecationDone, setDeprecationDone] = useState(false);
+  const [deprecationResult, setDeprecationResult] = useState(null);
+
+  // Viewer state
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerFile, setViewerFile] = useState("");
   const [viewerLoading, setViewerLoading] = useState(false);
@@ -41,20 +56,24 @@ export default function Home() {
 
   const isConfigured = Boolean(config?.repoUrl && config?.token);
 
-  // ---- Prompt / Questions ----
-  const FIRST_PROMPT = "Please enter the Feature Switch Name to Deprecate";
-
+  // ---- Questions from file, in order ----
+  // We trust the file order and ids: GetFS, DeprecationConfirmation, DeprecatedList, CreatePR, ApprovePR, MergePR
   const qList = useMemo(() => {
     if (Array.isArray(questions) && questions.length > 0) {
-      const copy = [...questions];
-      copy[0] = { ...(copy[0] || {}), id: "feature-name", text: FIRST_PROMPT };
-      return copy;
+      return questions; // use as-is, do not override
     }
-    return [{ id: "feature-name", text: FIRST_PROMPT }];
+    // Fallback minimal set to avoid a blank screen
+    return [
+      { id: "GetFS", text: "Please Enter the Feature Switch Name to Deprecate" },
+      { id: "DeprecationConfirmation", text: "Do you want to proceed with Deprecation" },
+      { id: "DeprecatedList", text: "List of Files where the Feature Switch is Deprecrated" },
+      { id: "CreatePR", text: "Do you want to create a Pull Request" },
+      { id: "ApprovePR", text: "Please Approve the Pull request" },
+      { id: "MergePR", text: "Do you want to Merge your Pull request" },
+    ];
   }, []);
 
   const total = qList.length;
-  const done = currentIndex >= total;
 
   // --- Reset flow ---
   const resetFlow = useCallback(() => {
@@ -63,9 +82,14 @@ export default function Home() {
     setInput("");
     setSending(false);
     setFeatureName("");
+    setFoundFiles([]);
+    setDeprecationDone(false);
+    setDeprecationResult(null);
+    localStorage.removeItem(DEFAULT_FILES_STORAGE_KEY);
 
     if (isConfigured) {
-      setMessages([{ from: "bot", text: qList[0]?.text || FIRST_PROMPT, ts: Date.now() }]);
+      const firstQ = qList[0]?.text || "Please enter input";
+      setMessages([{ from: "bot", text: firstQ, ts: Date.now() }]);
     } else {
       setMessages([
         {
@@ -116,7 +140,7 @@ export default function Home() {
       return;
     }
 
-    setMessages([{ from: "bot", text: qList[0]?.text || FIRST_PROMPT, ts: Date.now() }]);
+    setMessages([{ from: "bot", text: qList[0]?.text || "Please enter input", ts: Date.now() }]);
     setCurrentIndex(0);
   }, [showWelcome, isConfigured, qList]);
 
@@ -179,7 +203,7 @@ export default function Home() {
     process.env.REACT_APP_API_BASE ||
     (backendPort ? `http://localhost:${backendPort}` : "http://localhost:5282");
 
-  // Optional: still support posting other answers
+  // Optional: still support posting other answers (generic questions)
   const postAnswer = async ({ questionId, answer }) => {
     const endpoint = `${apiBase}/answers`;
     const res = await fetch(endpoint, {
@@ -198,7 +222,7 @@ export default function Home() {
     return res.json();
   };
 
-  /* ------------------ Listen for viewer width to shrink chat ------------------ */
+  /* ------------------ View integration ------------------ */
   useEffect(() => {
     const onWidth = (e) => {
       const w = Number(e.detail) || 0;
@@ -214,7 +238,6 @@ export default function Home() {
     };
   }, []);
 
-  /* ------------------ View integration ------------------ */
   const handleView = async (filePath) => {
     if (!isConfigured) return;
 
@@ -246,7 +269,6 @@ export default function Home() {
     setViewerLoading(false);
     setViewerError("");
     setViewerContent("");
-    // viewer will emit viewer:closed which resets padding via listener
   };
 
   const copyViewerContent = async () => {
@@ -258,10 +280,250 @@ export default function Home() {
     }
   };
 
-  // --- Submit handler (merged) ---
+  /* ------------------ Sequential flow helpers ------------------ */
+  const askNext = useCallback(
+    (nextIndexOffset = 1) => {
+      const nextIndex = currentIndex + nextIndexOffset;
+      setCurrentIndex(nextIndex);
+      const nextQ = qList[nextIndex];
+      if (nextQ) {
+        setMessages((m) => [...m, { from: "bot", text: nextQ.text, ts: Date.now() }]);
+      } else {
+        setMessages((m) => [
+          ...m,
+          { from: "bot", text: "Thanks! All questions are complete. 🎉", ts: Date.now() },
+        ]);
+      }
+    },
+    [currentIndex, qList]
+  );
+
+  const handleGetFS = async (userMsg) => {
+    // Save feature switch name
+    setFeatureName(userMsg);
+
+    // Search files in repo for this feature switch
+    const files = await searchFeatureFiles(userMsg, {
+      repoUrl: config.repoUrl,
+      token: config.token,
+    });
+
+    if (Array.isArray(files) && files.length > 0) {
+      setFoundFiles(files);
+
+      // Persist JUST the paths (backend payload requires strings)
+      const paths = toFilePaths(files);
+      try {
+        localStorage.setItem(DEFAULT_FILES_STORAGE_KEY, JSON.stringify(paths));
+      } catch {
+        // ignore storage errors
+      }
+
+      // Show files UI card
+      setMessages((m) => [
+        ...m,
+        { from: "bot-ui", type: "feature-files", files, ts: Date.now() },
+      ]);
+
+      // proceed to DeprecationConfirmation (next question)
+      askNext(1);
+    } else {
+      setMessages((m) => [
+        ...m,
+        { from: "bot", text: "No files with above feature switch name.", ts: Date.now() },
+      ]);
+
+      // Restart the flow at first question
+      setTimeout(() => {
+        setCurrentIndex(0);
+        setFeatureName("");
+        setFoundFiles([]);
+        localStorage.removeItem(DEFAULT_FILES_STORAGE_KEY);
+        setMessages((m) => [...m, { from: "bot", text: qList[0]?.text, ts: Date.now() }]);
+      }, 1200);
+    }
+  };
+
+  const handleDeprecationConfirmation = async (userMsg) => {
+    if (isYes(userMsg)) {
+      setMessages((m) => [...m, { from: "bot", text: "Starting deprecation…", ts: Date.now() }]);
+
+      try {
+        const result = await deprecateFeatureSwitch({
+          repoUrl: config.repoUrl,
+          token: config.token,
+          featureSwitchName: featureName,
+          // filePaths optional; read from localStorage('foundFeatureFiles')
+          baseBranch: "dev",
+        });
+
+        setDeprecationDone(true);
+        setDeprecationResult(result || null);
+
+        setMessages((m) => [
+          ...m,
+          {
+            from: "bot",
+            text:
+              "✅ Deprecation completed." +
+              (result?.message ? `\n${result.message}` : ""),
+            ts: Date.now(),
+          },
+        ]);
+
+        // Move to DeprecatedList
+        askNext(1);
+      } catch (err) {
+        setMessages((m) => [
+          ...m,
+          {
+            from: "bot",
+            text: `⚠️ Deprecation failed.`,
+            ts: Date.now(),
+          },
+        ]);
+        setToast({ text: "Deprecation failed.", type: "error" });
+      }
+    } else if (isNo(userMsg)) {
+      setMessages((m) => [
+        ...m,
+        { from: "bot", text: "Okay, deprecation cancelled.", ts: Date.now() },
+      ]);
+      // You can either end here or restart the flow
+      setTimeout(() => resetFlow(), 600);
+    } else {
+      setMessages((m) => [
+        ...m,
+        { from: "bot", text: "Please reply with Yes or No.", ts: Date.now() },
+      ]);
+    }
+  };
+
+  const handleDeprecatedList = async () => {
+    // Show the file paths we stored from search (and deprecation worked on)
+    let paths = [];
+    try {
+      const raw = localStorage.getItem(DEFAULT_FILES_STORAGE_KEY);
+      paths = JSON.parse(raw || "[]");
+    } catch {
+      paths = toFilePaths(foundFiles);
+    }
+    const body =
+      Array.isArray(paths) && paths.length
+        ? `Files deprecated:\n- ${paths.join("\n- ")}`
+        : "No file paths found to list.";
+
+    setMessages((m) => [...m, { from: "bot", text: body, ts: Date.now() }]);
+
+    // Auto-advance to CreatePR
+    askNext(1);
+  };
+
+  const handleCreatePR = async (userMsg) => {
+    // TODO: If your backend creates a PR here, call it.
+    // For now, we honor the Yes/No and move on with helpful messages.
+    if (isYes(userMsg)) {
+      setMessages((m) => [
+        ...m,
+        {
+          from: "bot",
+          text:
+            "📝 (Placeholder) Creating a Pull Request... " +
+            "Integrate your PR creation API here if not already part of deprecation.",
+          ts: Date.now(),
+        },
+      ]);
+
+      // If deprecationResult carries PR info, add it:
+      if (deprecationResult?.pullRequestUrl) {
+        setMessages((m) => [
+          ...m,
+          {
+            from: "bot",
+            text: `PR created: ${deprecationResult.pullRequestUrl}`,
+            ts: Date.now(),
+          },
+        ]);
+      }
+
+      askNext(1);
+    } else if (isNo(userMsg)) {
+      setMessages((m) => [
+        ...m,
+        { from: "bot", text: "PR creation skipped.", ts: Date.now() },
+      ]);
+      askNext(1); // still move forward to ApprovePR prompt (or you can end)
+    } else {
+      setMessages((m) => [
+        ...m,
+        { from: "bot", text: "Please reply with Yes or No.", ts: Date.now() },
+      ]);
+    }
+  };
+
+  const handleApprovePR = async (userMsg) => {
+    // TODO: Hook to your approval mechanism if any. GitHub approvals need user action.
+    if (isYes(userMsg)) {
+      setMessages((m) => [
+        ...m,
+        {
+          from: "bot",
+          text:
+            "✅ (Placeholder) Assume PR is approved. If you need to automate, connect to your approval workflow.",
+          ts: Date.now(),
+        },
+      ]);
+      askNext(1);
+    } else if (isNo(userMsg)) {
+      setMessages((m) => [
+        ...m,
+        { from: "bot", text: "PR approval skipped.", ts: Date.now() },
+      ]);
+      askNext(1);
+    } else {
+      setMessages((m) => [
+        ...m,
+        { from: "bot", text: "Please reply with Yes or No.", ts: Date.now() },
+      ]);
+    }
+  };
+
+  const handleMergePR = async (userMsg) => {
+    // TODO: Hook to your merge API if you have one.
+    if (isYes(userMsg)) {
+      setMessages((m) => [
+        ...m,
+        { from: "bot", text: "🔀 (Placeholder) Attempting to merge the PR...", ts: Date.now() },
+      ]);
+      setTimeout(() => {
+        setMessages((m) => [
+          ...m,
+          { from: "bot", text: "🎉 (Placeholder) PR merged successfully.", ts: Date.now() },
+        ]);
+      }, 500);
+    } else if (isNo(userMsg)) {
+      setMessages((m) => [
+        ...m,
+        { from: "bot", text: "Merge skipped. Flow complete.", ts: Date.now() },
+      ]);
+    } else {
+      setMessages((m) => [
+        ...m,
+        { from: "bot", text: "Please reply with Yes or No.", ts: Date.now() },
+      ]);
+      return; // don't finish flow on invalid input
+    }
+
+    // End of flow message
+    setTimeout(() => {
+      setMessages((m) => [...m, { from: "bot", text: "Thanks! All questions are complete. 🎉", ts: Date.now() }]);
+    }, 400);
+  };
+
+  /* ------------------ Submit handler (sequential flow) ------------------ */
   const onSubmit = async (e) => {
     e.preventDefault();
-    if (showWelcome || !isConfigured || sending || !input.trim() || done) return;
+    if (showWelcome || !isConfigured || sending || !input.trim()) return;
 
     const userMsg = input.trim();
     const question = qList[currentIndex];
@@ -272,66 +534,47 @@ export default function Home() {
     setSending(true);
 
     try {
-      if (question?.id === "feature-name") {
-        setFeatureName(userMsg);
-
-        const files = await searchFeatureFiles(userMsg, {
-          repoUrl: config.repoUrl,
-          token: config.token,
-        });
-
-        if (Array.isArray(files) && files.length > 0) {
-          setMessages((m) => [
-            ...m,
-            { from: "bot-ui", type: "feature-files", files, ts: Date.now() },
-          ]);
-
-          const nextIndex = currentIndex + 1;
-          setTimeout(() => {
-            setCurrentIndex(nextIndex);
-            if (nextIndex < total) {
-              const nextQ = qList[nextIndex];
-              setMessages((m) => [...m, { from: "bot", text: nextQ.text, ts: Date.now() }]);
-            } else {
-              setMessages((m) => [
-                ...m,
-                { from: "bot", text: "Thanks! All questions are complete. 🎉", ts: Date.now() },
-              ]);
-            }
-          }, 400);
-        } else {
-          setMessages((m) => [
-            ...m,
-            { from: "bot", text: "No files with above feature switch name.", ts: Date.now() },
-          ]);
-
-          setTimeout(() => {
-            setCurrentIndex(0);
-            setFeatureName("");
-            setMessages((m) => [...m, { from: "bot", text: FIRST_PROMPT, ts: Date.now() }]);
-          }, 1200);
-        }
-      } else {
-        try {
-          await postAnswer({ questionId: question?.id, answer: userMsg });
-        } catch {
-          // Non-blocking for UX
+      switch (question?.id) {
+        case "GetFS": {
+          await handleGetFS(userMsg);
+          break;
         }
 
-        const nextIndex = currentIndex + 1;
-        setTimeout(() => {
-          setCurrentIndex(nextIndex);
+        case "DeprecationConfirmation": {
+          await handleDeprecationConfirmation(userMsg);
+          break;
+        }
 
-          if (nextIndex < total) {
-            const nextQ = qList[nextIndex];
-            setMessages((m) => [...m, { from: "bot", text: nextQ.text, ts: Date.now() }]);
-          } else {
-            setMessages((m) => [
-              ...m,
-              { from: "bot", text: "Thanks! All questions are complete. 🎉", ts: Date.now() },
-            ]);
+        case "DeprecatedList": {
+          // No user input needed; we just show the list and continue
+          await handleDeprecatedList();
+          break;
+        }
+
+        case "CreatePR": {
+          await handleCreatePR(userMsg);
+          break;
+        }
+
+        case "ApprovePR": {
+          await handleApprovePR(userMsg);
+          break;
+        }
+
+        case "MergePR": {
+          await handleMergePR(userMsg);
+          break;
+        }
+
+        default: {
+          // Generic fallback for any other ids (post and continue)
+          try {
+            await postAnswer({ questionId: question?.id, answer: userMsg });
+          } catch {
+            // no-op
           }
-        }, 300);
+          askNext(1);
+        }
       }
     } catch (err) {
       setMessages((m) => [
@@ -346,8 +589,12 @@ export default function Home() {
       setTimeout(() => {
         setCurrentIndex(0);
         setFeatureName("");
-        setMessages((m) => [...m, { from: "bot", text: FIRST_PROMPT, ts: Date.now() }]);
-      }, 1800);
+        setFoundFiles([]);
+        setDeprecationDone(false);
+        setDeprecationResult(null);
+        localStorage.removeItem(DEFAULT_FILES_STORAGE_KEY);
+        setMessages((m) => [...m, { from: "bot", text: qList[0]?.text, ts: Date.now() }]);
+      }, 1200);
     } finally {
       setSending(false);
     }
@@ -385,11 +632,10 @@ export default function Home() {
           className={`chat-container ${toast?.text ? "has-toast" : ""}`}
           style={{
             position: "relative",
-            // 👇 Shrink the chat area when viewer is open and add a small buffer (+12)
+            // Shrink the chat area when viewer is open and add a small buffer (+12)
             paddingRight: viewerOpen ? Math.max(0, viewerWidthPx + 12) : 0,
             transition: "padding-right 180ms ease",
             boxSizing: "border-box",
-            // Important: no overflow: hidden here, otherwise the input pill gets clipped
           }}
         >
           {/* Toast */}
@@ -467,9 +713,9 @@ export default function Home() {
               placeholder="Type your message…"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              disabled={sending || done}
+              disabled={sending}
             />
-            <button className="send-btn" type="submit" disabled={sending || done}>
+            <button className="send-btn" type="submit" disabled={sending}>
               {sending ? "…" : "➤"}
             </button>
           </form>

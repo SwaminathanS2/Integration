@@ -1,9 +1,12 @@
+using System.Threading.Tasks;
 using GithubAssistAPI.Models;
 
 namespace GithubAssistAPI.Services
 {
     public interface IBranchService
     {
-        Task<BranchRequest> CreateBranch(CreateBranchRequest request);
+        Task<BranchResponse> CreateBranchAsync(BranchRequest request);
+
+        Task<bool> DeleteBranchAsync(BranchContextData ctx);
     }
 }
