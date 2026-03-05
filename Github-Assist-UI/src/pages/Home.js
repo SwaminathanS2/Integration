@@ -2,113 +2,8 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Link, useLocation } from "react-router-dom";
 import questions from "../data/questions.json";
-
-/* ------------------------- Inline styles for the feature files card ------------------------- */
-const cardStyles = {
-  wrapper: { margin: "8px 0" },
-  card: {
-    background: "#fff",
-    border: "2px solid #1e90ff",
-    borderRadius: 12,
-    padding: 16,
-    boxShadow: "0 1px 0 rgba(0,0,0,0.02)",
-    overflow: "visible", // no inner scrollbars; let outer chat scroll
-  },
-  header: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    marginBottom: 8,
-  },
-  title: { margin: 0, fontSize: "1.1rem", fontWeight: 700, color: "#222" },
-  list: {
-    listStyle: "none",
-    padding: 0,
-    margin: "8px 0 0 0",
-    maxHeight: "none",
-    overflow: "visible", // avoid nested scrollbar
-  },
-  row: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    padding: "10px 4px",
-    borderBottom: "1px dotted #d3d3d3",
-  },
-  lastRow: { borderBottom: "none" },
-  fileName: {
-    color: "#2c2c2c",
-    fontSize: "0.95rem",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-    paddingRight: 12,
-    maxWidth: "70%",
-  },
-  viewBtn: {
-    background: "#fff",
-    color: "#1e90ff",
-    border: "1px solid #cfe7ff",
-    padding: "6px 12px",
-    borderRadius: 10,
-    fontWeight: 600,
-    cursor: "pointer",
-  },
-  footer: {
-    marginTop: 10,
-    display: "flex",
-    justifyContent: "flex-end",
-    color: "#555",
-    fontSize: "0.9rem",
-    fontWeight: 600,
-  },
-};
-
-/** Presentational card used inside the chat stream. */
-function FeatureFilesCard({ files, onView }) {
-  return (
-    <div style={cardStyles.wrapper}>
-      <div style={cardStyles.card} aria-label="Files where the Feature Switch is used">
-        <div style={cardStyles.header}>
-          {/* Title only (no refresh) */}
-          <h3 style={cardStyles.title}>List of Files where the Feature Switch is Used</h3>
-        </div>
-
-        <ul style={cardStyles.list}>
-          {files.map((name, i) => (
-            <li
-              key={`${name}-${i}`}
-              style={{
-                ...cardStyles.row,
-                ...(i === files.length - 1 ? cardStyles.lastRow : null),
-              }}
-            >
-              <span style={cardStyles.fileName} title={name}>
-                {name}
-              </span>
-              <button
-                type="button"
-                style={cardStyles.viewBtn}
-                onClick={() => onView?.(name)}
-                aria-label={`View ${name}`}
-                title="View"
-              >
-                View
-              </button>
-            </li>
-          ))}
-        </ul>
-
-        {/* ✅ Count in footer (last) */}
-        <div style={cardStyles.footer}>
-          {files.length} {files.length === 1 ? "file found" : "files found"}
-        </div>
-      </div>
-    </div>
-  );
-}
+import { FeatureFilesCard, searchFeatureFiles } from "../components/search";
+import { FeatureFileViewer, viewRawFile } from "../components/view";
 
 /* --------------------------- Config helpers --------------------------- */
 const getConfig = () => {
@@ -130,7 +25,17 @@ export default function Home() {
   const [messages, setMessages] = useState([]);
   const [showWelcome, setShowWelcome] = useState(true);
   const [toast, setToast] = useState(null); // { text, type: 'success'|'error' }
-  const [, setFeatureName] = useState("");  // setter only; avoids ESLint when unused for now
+  const [, setFeatureName] = useState(""); // setter only; avoids ESLint when unused
+
+  // Viewer state (right-side drawer)
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerFile, setViewerFile] = useState("");
+  const [viewerLoading, setViewerLoading] = useState(false);
+  const [viewerError, setViewerError] = useState("");
+  const [viewerContent, setViewerContent] = useState("");
+
+  // Track drawer width to shrink chat area
+  const [viewerWidthPx, setViewerWidthPx] = useState(0);
 
   const scrollerRef = useRef(null);
 
@@ -244,7 +149,6 @@ export default function Home() {
   }, []);
 
   // ✅ One-time connectivity success toast
-  // Trigger only after app is configured AND welcome is dismissed, so it is visible in chat.
   useEffect(() => {
     if (!isConfigured || showWelcome) return;
     try {
@@ -269,14 +173,11 @@ export default function Home() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  // ------------------ API base from .env ------------------
+  // ------------------ API base from .env (kept for postAnswer) ------------------
   const backendPort = process.env.REACT_APP_BACKEND_PORT;
   const apiBase =
     process.env.REACT_APP_API_BASE ||
     (backendPort ? `http://localhost:${backendPort}` : "http://localhost:5282");
-
-  // Your backend endpoint is POST /api/search (SearchController)
-  const searchApi = process.env.REACT_APP_SEARCH_API || `${apiBase}/api/search`;
 
   // Optional: still support posting other answers
   const postAnswer = async ({ questionId, answer }) => {
@@ -297,78 +198,64 @@ export default function Home() {
     return res.json();
   };
 
-  // Build JSON payload EXACTLY matching your C# SearchRequest
-  const buildSearchRequest = useCallback(
-    (feature) => ({
-      RepoURL: config.repoUrl || "",
-      AccessToken: config.token || "",
-      FeatureSwitchName: feature,
-    }),
-    [config.repoUrl, config.token]
-  );
+  /* ------------------ Listen for viewer width to shrink chat ------------------ */
+  useEffect(() => {
+    const onWidth = (e) => {
+      const w = Number(e.detail) || 0;
+      setViewerWidthPx(w);
+    };
+    const onClosed = () => setViewerWidthPx(0);
 
-  // Helper: extract files array from your API shape and a few alternatives
-  const extractFiles = (json) => {
-    if (!json) return [];
-    // ✅ Your API shape: { fileNames: string[] }
-    if (Array.isArray(json.fileNames)) return json.fileNames;
+    window.addEventListener("viewer:width", onWidth);
+    window.addEventListener("viewer:closed", onClosed);
+    return () => {
+      window.removeEventListener("viewer:width", onWidth);
+      window.removeEventListener("viewer:closed", onClosed);
+    };
+  }, []);
 
-    // Fallbacks (keep for flexibility)
-    if (Array.isArray(json)) return json;
-    if (Array.isArray(json.files)) return json.files;
-    if (json.data && Array.isArray(json.data.files)) return json.data.files;
-    if (json.result && Array.isArray(json.result.files)) return json.result.files;
+  /* ------------------ View integration ------------------ */
+  const handleView = async (filePath) => {
+    if (!isConfigured) return;
 
-    // If nested under a "json" wrapper as a string or object
-    if (json.json) {
-      let inner = json.json;
-      if (typeof inner === "string") {
-        try {
-          inner = JSON.parse(inner);
-        } catch {
-          inner = null;
-        }
-      }
-      if (inner) {
-        if (Array.isArray(inner.fileNames)) return inner.fileNames;
-        if (Array.isArray(inner.files)) return inner.files;
-        if (inner.data && Array.isArray(inner.data.files)) return inner.data.files;
-        if (inner.result && Array.isArray(inner.result.files)) return inner.result.files;
-      }
+    setViewerOpen(true);
+    setViewerFile(filePath);
+    setViewerContent("");
+    setViewerError("");
+    setViewerLoading(true);
+
+    const result = await viewRawFile(filePath, {
+      repoUrl: config.repoUrl,
+      token: config.token,
+      branch: "", // backend defaults to "main"
+    });
+
+    if (result.ok) {
+      setViewerContent(result.content || "");
+      setViewerError("");
+    } else {
+      setViewerContent("");
+      setViewerError(result.error || "Failed to load file.");
     }
-
-    return [];
+    setViewerLoading(false);
   };
 
-  // Dedicated search function to reuse for Submit
-  const searchFeatureFiles = useCallback(
-    async (featureSwitchName) => {
-      const payload = buildSearchRequest(featureSwitchName);
-      try {
-        const res = await fetch(searchApi, {
-          method: "POST",
-          headers: { Accept: "application/json", "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        let json = null;
-        try {
-          json = await res.json();
-        } catch {
-          json = null;
-        }
-        return extractFiles(json);
-      } catch {
-        return [];
-      }
-    },
-    [searchApi, buildSearchRequest]
-  );
+  const closeViewer = () => {
+    setViewerOpen(false);
+    setViewerFile("");
+    setViewerLoading(false);
+    setViewerError("");
+    setViewerContent("");
+    // viewer will emit viewer:closed which resets padding via listener
+  };
 
-  // View button behaviour (stub – hook your modal or navigation here)
-  const handleView = (fileName) => {
-    // TODO: Integrate your View API: send { repoUrl: config.repoUrl, token: config.token, fileName }
-    // e.g., fetch(`${apiBase}/api/view`, { method: 'POST', headers: {...}, body: JSON.stringify({...}) })
-    console.log("View file clicked:", { fileName });
+  const copyViewerContent = async () => {
+    try {
+      await navigator.clipboard.writeText(viewerContent || "");
+      setToast({ text: "Copied file content to clipboard.", type: "success" });
+    } catch {
+      setToast({ text: "Copy failed.", type: "error" });
+    }
   };
 
   // --- Submit handler (merged) ---
@@ -386,21 +273,19 @@ export default function Home() {
 
     try {
       if (question?.id === "feature-name") {
-        // Persist the feature name (used later when you wire "View" API)
         setFeatureName(userMsg);
 
-        // Search via API
-        const files = await searchFeatureFiles(userMsg);
+        const files = await searchFeatureFiles(userMsg, {
+          repoUrl: config.repoUrl,
+          token: config.token,
+        });
 
-        // Display files (success) OR inform and re-ask first question (empty)
         if (Array.isArray(files) && files.length > 0) {
-          // Push a special "UI" message that renders the card (no extra scrollbars inside)
           setMessages((m) => [
             ...m,
             { from: "bot-ui", type: "feature-files", files, ts: Date.now() },
           ]);
 
-          // Proceed to next question (original flow preserved)
           const nextIndex = currentIndex + 1;
           setTimeout(() => {
             setCurrentIndex(nextIndex);
@@ -415,7 +300,6 @@ export default function Home() {
             }
           }, 400);
         } else {
-          // Empty list -> Inform and re-ask first question after a short delay
           setMessages((m) => [
             ...m,
             { from: "bot", text: "No files with above feature switch name.", ts: Date.now() },
@@ -428,14 +312,12 @@ export default function Home() {
           }, 1200);
         }
       } else {
-        // Optional: send other answers too
         try {
           await postAnswer({ questionId: question?.id, answer: userMsg });
         } catch {
           // Non-blocking for UX
         }
 
-        // Default progression for other questions
         const nextIndex = currentIndex + 1;
         setTimeout(() => {
           setCurrentIndex(nextIndex);
@@ -461,7 +343,6 @@ export default function Home() {
         },
       ]);
 
-      // On hard error, re-ask first question after a short delay
       setTimeout(() => {
         setCurrentIndex(0);
         setFeatureName("");
@@ -502,9 +383,16 @@ export default function Home() {
       {isConfigured && (
         <div
           className={`chat-container ${toast?.text ? "has-toast" : ""}`}
-          style={{ position: "relative" }}
+          style={{
+            position: "relative",
+            // 👇 Shrink the chat area when viewer is open and add a small buffer (+12)
+            paddingRight: viewerOpen ? Math.max(0, viewerWidthPx + 12) : 0,
+            transition: "padding-right 180ms ease",
+            boxSizing: "border-box",
+            // Important: no overflow: hidden here, otherwise the input pill gets clipped
+          }}
         >
-          {/* ✅ Toast centered slightly higher at top of chat container */}
+          {/* Toast */}
           {toast?.text && (
             <div
               className={`message-box toast-top ${toast.type || "success"}`}
@@ -515,7 +403,7 @@ export default function Home() {
                 top: "-12px",
                 left: "50%",
                 transform: "translateX(-50%)",
-                zIndex: 2,
+                zIndex: 10,
                 maxWidth: "min(92%, 720px)",
                 width: "max-content",
                 padding: "10px 14px",
@@ -545,25 +433,21 @@ export default function Home() {
             </div>
           )}
 
-          {/* Messages (add padding when toast visible so messages don’t sit beneath it) */}
+          {/* Messages */}
           <div
             className="messages"
             ref={scrollerRef}
             style={toast?.text ? { paddingTop: 64 } : undefined}
           >
             {messages.map((m, idx) => {
-              // Render our UI card message when present (no bubble wrapper; avoids nested scrollbars)
               if (m.type === "feature-files" && Array.isArray(m.files)) {
                 return (
-                  <FeatureFilesCard
-                    key={`ff-${idx}`}
-                    files={m.files}
-                    onView={(file) => handleView(file)}
-                  />
+                  <div key={`ff-wrap-${idx}`}>
+                    <FeatureFilesCard files={m.files} onView={(file) => handleView(file)} />
+                  </div>
                 );
               }
 
-              // Default text bubble
               return (
                 <div key={`msg-${idx}`} className={`bubble ${m.from === "user" ? "user" : "bot"}`}>
                   {(m.text || "").split("\n").map((line, i) => (
@@ -589,6 +473,17 @@ export default function Home() {
               {sending ? "…" : "➤"}
             </button>
           </form>
+
+          {/* === Right-side File Viewer Drawer === */}
+          <FeatureFileViewer
+            open={viewerOpen}
+            fileName={viewerFile}
+            content={viewerContent}
+            loading={viewerLoading}
+            error={viewerError}
+            onClose={closeViewer}
+            onCopy={copyViewerContent}
+          />
         </div>
       )}
     </div>
