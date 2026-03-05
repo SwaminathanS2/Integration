@@ -1,15 +1,31 @@
-
 // src/pages/Home.js
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Link, useLocation } from "react-router-dom";
 import questions from "../data/questions.json";
+
+// Pre-deprecation search + card
 import { FeatureFilesCard, searchFeatureFiles } from "../components/search";
+
+// Post-deprecation search + card
+import {
+  FeatureFilesCard as FeatureFilesDeprecatedCard,
+  searchFeatureFiles as searchFeatureFilesDeprecated,
+} from "../components/search1";
+
+// Viewer UI + API (pre-deprecation, defaults to main via backend)
 import { FeatureFileViewer, viewRawFile } from "../components/view";
+
+// Post-deprecation viewer API (we'll pass the feature branch name)
+import { viewRawFile as viewRawFileBranch } from "../components/view1";
+
 import {
   deprecateFeatureSwitch,
   toFilePaths,
   DEFAULT_FILES_STORAGE_KEY,
 } from "../components/deprecate";
+
+// ⬇️ NEW: PR creation client
+import { createPullRequest } from "../components/pullrequest";
 
 /* --------------------------- Config helpers --------------------------- */
 const getConfig = () => {
@@ -38,9 +54,9 @@ export default function Home() {
 
   // Domain state
   const [featureName, setFeatureName] = useState("");
-  const [foundFiles, setFoundFiles] = useState([]);
-  const [deprecationDone, setDeprecationDone] = useState(false);
-  const [deprecationResult, setDeprecationResult] = useState(null);
+  const [, setFoundFiles] = useState([]);
+  const [, setDeprecationDone] = useState(false);
+  const [, setDeprecationResult] = useState(null);
 
   // Viewer state
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -57,23 +73,20 @@ export default function Home() {
   const isConfigured = Boolean(config?.repoUrl && config?.token);
 
   // ---- Questions from file, in order ----
-  // We trust the file order and ids: GetFS, DeprecationConfirmation, DeprecatedList, CreatePR, ApprovePR, MergePR
   const qList = useMemo(() => {
     if (Array.isArray(questions) && questions.length > 0) {
-      return questions; // use as-is, do not override
+      // Filter out DeprecatedList if present
+      return questions.filter((q) => q.id !== "DeprecatedList");
     }
-    // Fallback minimal set to avoid a blank screen
+    // Fallback minimal set (no DeprecatedList)
     return [
       { id: "GetFS", text: "Please Enter the Feature Switch Name to Deprecate" },
       { id: "DeprecationConfirmation", text: "Do you want to proceed with Deprecation" },
-      { id: "DeprecatedList", text: "List of Files where the Feature Switch is Deprecrated" },
       { id: "CreatePR", text: "Do you want to create a Pull Request" },
       { id: "ApprovePR", text: "Please Approve the Pull request" },
       { id: "MergePR", text: "Do you want to Merge your Pull request" },
     ];
   }, []);
-
-  const total = qList.length;
 
   // --- Reset flow ---
   const resetFlow = useCallback(() => {
@@ -197,7 +210,7 @@ export default function Home() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  // ------------------ API base from .env (kept for postAnswer) ------------------
+  // ------------------ API base from .env (kept for postAnswer & PR) ------------------
   const backendPort = process.env.REACT_APP_BACKEND_PORT;
   const apiBase =
     process.env.REACT_APP_API_BASE ||
@@ -222,7 +235,7 @@ export default function Home() {
     return res.json();
   };
 
-  /* ------------------ View integration ------------------ */
+  /* ------------------ View integration (drawer sizing events) ------------------ */
   useEffect(() => {
     const onWidth = (e) => {
       const w = Number(e.detail) || 0;
@@ -238,6 +251,7 @@ export default function Home() {
     };
   }, []);
 
+  // === Pre-deprecation: default backend branch (main)
   const handleView = async (filePath) => {
     if (!isConfigured) return;
 
@@ -251,6 +265,34 @@ export default function Home() {
       repoUrl: config.repoUrl,
       token: config.token,
       branch: "", // backend defaults to "main"
+    });
+
+    if (result.ok) {
+      setViewerContent(result.content || "");
+      setViewerError("");
+    } else {
+      setViewerContent("");
+      setViewerError(result.error || "Failed to load file.");
+    }
+    setViewerLoading(false);
+  };
+
+  // === Post-deprecation: use the LOWERCASED feature switch name as branch
+  const handleViewDeprecated = async (filePath) => {
+    if (!isConfigured) return;
+
+    setViewerOpen(true);
+    setViewerFile(filePath);
+    setViewerContent("");
+    setViewerError("");
+    setViewerLoading(true);
+
+    const branchName = (featureName || "").toLowerCase(); // ⬅️ lowercased
+
+    const result = await viewRawFileBranch(filePath, {
+      repoUrl: config.repoUrl,
+      token: config.token,
+      branch: branchName,
     });
 
     if (result.ok) {
@@ -299,11 +341,12 @@ export default function Home() {
   );
 
   const handleGetFS = async (userMsg) => {
-    // Save feature switch name
-    setFeatureName(userMsg);
+    // Save a normalized feature switch name (trimmed)
+    const normalized = (userMsg || "").trim();
+    setFeatureName(normalized);
 
-    // Search files in repo for this feature switch
-    const files = await searchFeatureFiles(userMsg, {
+    // Search files in repo for this feature switch (pre-deprecation)
+    const files = await searchFeatureFiles(normalized, {
       repoUrl: config.repoUrl,
       token: config.token,
     });
@@ -316,16 +359,15 @@ export default function Home() {
       try {
         localStorage.setItem(DEFAULT_FILES_STORAGE_KEY, JSON.stringify(paths));
       } catch {
-        // ignore storage errors
+        // ignore
       }
 
-      // Show files UI card
+      // Show files UI card (pre-deprecation)
       setMessages((m) => [
         ...m,
         { from: "bot-ui", type: "feature-files", files, ts: Date.now() },
       ]);
 
-      // proceed to DeprecationConfirmation (next question)
       askNext(1);
     } else {
       setMessages((m) => [
@@ -333,7 +375,7 @@ export default function Home() {
         { from: "bot", text: "No files with above feature switch name.", ts: Date.now() },
       ]);
 
-      // Restart the flow at first question
+      // Restart the flow
       setTimeout(() => {
         setCurrentIndex(0);
         setFeatureName("");
@@ -353,8 +395,7 @@ export default function Home() {
           repoUrl: config.repoUrl,
           token: config.token,
           featureSwitchName: featureName,
-          // filePaths optional; read from localStorage('foundFeatureFiles')
-          baseBranch: "dev",
+          baseBranch: "dev", // your deprecation workflow base, unchanged
         });
 
         setDeprecationDone(true);
@@ -362,25 +403,54 @@ export default function Home() {
 
         setMessages((m) => [
           ...m,
-          {
-            from: "bot",
-            text:
-              "✅ Deprecation completed." +
-              (result?.message ? `\n${result.message}` : ""),
-            ts: Date.now(),
-          },
+          { from: "bot", text: "✅ Deprecation completed.", ts: Date.now() },
         ]);
 
-        // Move to DeprecatedList
+        // Re-run search (POST-DEPRECATION) using search1.js
+        try {
+          const refreshedFiles = await searchFeatureFilesDeprecated(featureName, {
+            repoUrl: config.repoUrl,
+            token: config.token,
+          });
+
+          if (Array.isArray(refreshedFiles) && refreshedFiles.length > 0) {
+            setFoundFiles(refreshedFiles);
+
+            const refreshedPaths = toFilePaths(refreshedFiles);
+            try {
+              localStorage.setItem(DEFAULT_FILES_STORAGE_KEY, JSON.stringify(refreshedPaths));
+            } catch {}
+
+            // Show files UI card again (deprecated title)
+            setMessages((m) => [
+              ...m,
+              {
+                from: "bot-ui",
+                type: "feature-files-deprecated",
+                files: refreshedFiles,
+                ts: Date.now(),
+              },
+            ]);
+          } else {
+            setMessages((m) => [
+              ...m,
+              { from: "bot", text: "No files found after deprecation.", ts: Date.now() },
+            ]);
+            localStorage.removeItem(DEFAULT_FILES_STORAGE_KEY);
+          }
+        } catch {
+          setMessages((m) => [
+            ...m,
+            { from: "bot", text: "⚠️ Could not refresh files after deprecation.", ts: Date.now() },
+          ]);
+        }
+
+        // Move directly to CreatePR
         askNext(1);
       } catch (err) {
         setMessages((m) => [
           ...m,
-          {
-            from: "bot",
-            text: `⚠️ Deprecation failed.`,
-            ts: Date.now(),
-          },
+          { from: "bot", text: `⚠️ Deprecation failed.`, ts: Date.now() },
         ]);
         setToast({ text: "Deprecation failed.", type: "error" });
       }
@@ -389,7 +459,6 @@ export default function Home() {
         ...m,
         { from: "bot", text: "Okay, deprecation cancelled.", ts: Date.now() },
       ]);
-      // You can either end here or restart the flow
       setTimeout(() => resetFlow(), 600);
     } else {
       setMessages((m) => [
@@ -399,60 +468,79 @@ export default function Home() {
     }
   };
 
-  const handleDeprecatedList = async () => {
-    // Show the file paths we stored from search (and deprecation worked on)
-    let paths = [];
-    try {
-      const raw = localStorage.getItem(DEFAULT_FILES_STORAGE_KEY);
-      paths = JSON.parse(raw || "[]");
-    } catch {
-      paths = toFilePaths(foundFiles);
-    }
-    const body =
-      Array.isArray(paths) && paths.length
-        ? `Files deprecated:\n- ${paths.join("\n- ")}`
-        : "No file paths found to list.";
-
-    setMessages((m) => [...m, { from: "bot", text: body, ts: Date.now() }]);
-
-    // Auto-advance to CreatePR
-    askNext(1);
-  };
-
+  // ⬇️ UPDATED: exact behavior requested for PR step
   const handleCreatePR = async (userMsg) => {
-    // TODO: If your backend creates a PR here, call it.
-    // For now, we honor the Yes/No and move on with helpful messages.
     if (isYes(userMsg)) {
       setMessages((m) => [
         ...m,
-        {
-          from: "bot",
-          text:
-            "📝 (Placeholder) Creating a Pull Request... " +
-            "Integrate your PR creation API here if not already part of deprecation.",
-          ts: Date.now(),
-        },
+        { from: "bot", text: "Starting to raise pull request…", ts: Date.now() },
       ]);
 
-      // If deprecationResult carries PR info, add it:
-      if (deprecationResult?.pullRequestUrl) {
+      try {
+        const headBranch = (featureName || "").trim().toLowerCase();
+        const baseBranch = "dev";
+
+        const result = await createPullRequest({
+          token: config.token,
+          repoUrl: config.repoUrl,
+          headBranch,
+          baseBranch,
+          apiBase, // reuse same base as other calls
+        });
+
+        if (result?.ok) {
+          // Try to surface a URL if the service returns one
+          const prUrl =
+            result.data?.html_url ||
+            result.data?.url ||
+            result.data?.webUrl ||
+            result.data?.prUrl ||
+            result.data?.pullRequestUrl ||
+            null;
+
+          setMessages((m) => [
+            ...m,
+            {
+              from: "bot",
+              text: prUrl ? `Pull request raised: ${prUrl}` : "Pull request raised.",
+              ts: Date.now(),
+            },
+          ]);
+
+          // Continue to next question (ApprovePR)
+          askNext(1);
+        } else {
+          setMessages((m) => [
+            ...m,
+            {
+              from: "bot",
+              text: "Pull request failed to raise.",
+              ts: Date.now(),
+            },
+          ]);
+          setToast({
+            text: result?.error ? `PR creation failed: ${result.error}` : "PR creation failed.",
+            type: "error",
+          });
+          // stay on the same question so the user can retry or answer again
+        }
+      } catch (err) {
         setMessages((m) => [
           ...m,
-          {
-            from: "bot",
-            text: `PR created: ${deprecationResult.pullRequestUrl}`,
-            ts: Date.now(),
-          },
+          { from: "bot", text: "Pull request failed to raise.", ts: Date.now() },
         ]);
+        setToast({
+          text: err?.message || "PR creation failed.",
+          type: "error",
+        });
       }
-
-      askNext(1);
     } else if (isNo(userMsg)) {
+      // If user says No → reset the flow (as requested)
       setMessages((m) => [
         ...m,
-        { from: "bot", text: "PR creation skipped.", ts: Date.now() },
+        { from: "bot", text: "PR creation skipped. Resetting the flow…", ts: Date.now() },
       ]);
-      askNext(1); // still move forward to ApprovePR prompt (or you can end)
+      setTimeout(() => resetFlow(), 600);
     } else {
       setMessages((m) => [
         ...m,
@@ -462,7 +550,6 @@ export default function Home() {
   };
 
   const handleApprovePR = async (userMsg) => {
-    // TODO: Hook to your approval mechanism if any. GitHub approvals need user action.
     if (isYes(userMsg)) {
       setMessages((m) => [
         ...m,
@@ -475,10 +562,7 @@ export default function Home() {
       ]);
       askNext(1);
     } else if (isNo(userMsg)) {
-      setMessages((m) => [
-        ...m,
-        { from: "bot", text: "PR approval skipped.", ts: Date.now() },
-      ]);
+      setMessages((m) => [...m, { from: "bot", text: "PR approval skipped.", ts: Date.now() }]);
       askNext(1);
     } else {
       setMessages((m) => [
@@ -489,7 +573,6 @@ export default function Home() {
   };
 
   const handleMergePR = async (userMsg) => {
-    // TODO: Hook to your merge API if you have one.
     if (isYes(userMsg)) {
       setMessages((m) => [
         ...m,
@@ -511,12 +594,14 @@ export default function Home() {
         ...m,
         { from: "bot", text: "Please reply with Yes or No.", ts: Date.now() },
       ]);
-      return; // don't finish flow on invalid input
+      return;
     }
 
-    // End of flow message
     setTimeout(() => {
-      setMessages((m) => [...m, { from: "bot", text: "Thanks! All questions are complete. 🎉", ts: Date.now() }]);
+      setMessages((m) => [
+        ...m,
+        { from: "bot", text: "Thanks! All questions are complete. 🎉", ts: Date.now() },
+      ]);
     }, 400);
   };
 
@@ -545,12 +630,6 @@ export default function Home() {
           break;
         }
 
-        case "DeprecatedList": {
-          // No user input needed; we just show the list and continue
-          await handleDeprecatedList();
-          break;
-        }
-
         case "CreatePR": {
           await handleCreatePR(userMsg);
           break;
@@ -567,12 +646,9 @@ export default function Home() {
         }
 
         default: {
-          // Generic fallback for any other ids (post and continue)
           try {
             await postAnswer({ questionId: question?.id, answer: userMsg });
-          } catch {
-            // no-op
-          }
+          } catch {}
           askNext(1);
         }
       }
@@ -632,7 +708,6 @@ export default function Home() {
           className={`chat-container ${toast?.text ? "has-toast" : ""}`}
           style={{
             position: "relative",
-            // Shrink the chat area when viewer is open and add a small buffer (+12)
             paddingRight: viewerOpen ? Math.max(0, viewerWidthPx + 12) : 0,
             transition: "padding-right 180ms ease",
             boxSizing: "border-box",
@@ -694,6 +769,17 @@ export default function Home() {
                 );
               }
 
+              if (m.type === "feature-files-deprecated" && Array.isArray(m.files)) {
+                return (
+                  <div key={`ffd-wrap-${idx}`}>
+                    <FeatureFilesDeprecatedCard
+                      files={m.files}
+                      onView={(file) => handleViewDeprecated(file)}
+                    />
+                  </div>
+                );
+              }
+
               return (
                 <div key={`msg-${idx}`} className={`bubble ${m.from === "user" ? "user" : "bot"}`}>
                   {(m.text || "").split("\n").map((line, i) => (
@@ -720,7 +806,7 @@ export default function Home() {
             </button>
           </form>
 
-          {/* === Right-side File Viewer Drawer === */}
+          {/* === Right-side File Viewer Drawer (single shared UI) === */}
           <FeatureFileViewer
             open={viewerOpen}
             fileName={viewerFile}
