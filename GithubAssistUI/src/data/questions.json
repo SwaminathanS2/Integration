@@ -1,0 +1,9 @@
+[
+  { "id": "GetFS", "text": "Please Enter the Feature Switch Name to Deprecate" },
+  { "id": "FilesToDeprecate", "text": "List of Files where the Feature Switch is Used" },
+  { "id": "DeprecationConfirmation", "text": "Do you want to proceed with Deprecation" },
+  { "id": "DeprecatedList", "text": "List of Files where the Feature Switch is Deprecrated" },
+  { "id": "CreatePR", "text": "Do you want to create a Pull Request" },
+  { "id": "ApprovePR", "text": "Please Approve the Pull request" },
+  { "id": "MergePR", "text": "Do you want to Merge your Pull request" }
+]
