@@ -17,7 +17,10 @@ const cardStyles = {
     borderRadius: 12,
     padding: 16,
     boxShadow: "0 1px 0 rgba(0,0,0,0.02)",
-    overflow: "visible", // no inner scrollbars; let outer chat scroll
+    overflow: "visible",
+    marginRight: "70px",
+    maxWidth: "100%",
+    marginLeft: "70px", // no inner scrollbars; let outer chat scroll
   },
   header: {
     display: "flex",

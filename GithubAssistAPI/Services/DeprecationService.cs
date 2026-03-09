@@ -238,114 +238,172 @@ namespace GithubAssistAPI.Services
         // =========================
         // Existing transformation
         // =========================
-        private string ApplyDeprecationLogic(string content, string DeprecatedFeature)
+
+private string ApplyDeprecationLogic(string content, string DeprecatedFeature)
+{
+    var lines = content.Split('\n');
+    var output = new List<string>();
+
+    // Allow optional quotes around the feature token
+    string featurePattern =
+        $@"\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*CanExecuteAFeatureFromName\s*\(\s*""?{Regex.Escape(DeprecatedFeature)}""?\s*\)";
+
+    bool commentAdded = false;
+    int i = 0;
+
+    while (i < lines.Length)
+    {
+        string trimmed = lines[i].Trim();
+
+        if (Regex.IsMatch(trimmed, @"^if\b", RegexOptions.IgnoreCase))
         {
-            var lines = content.Split('\n');
-            var output = new List<string>();
+            bool isFeatureMatch = Regex.IsMatch(trimmed, featurePattern, RegexOptions.IgnoreCase);
 
-            string featurePattern =
-                @"\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*CanExecuteAFeatureFromName\s*\(\s*" +
-                Regex.Escape(DeprecatedFeature) +
-                @"\s*\)";
-
-            bool commentAdded = false;
-            int i = 0;
-
-            while (i < lines.Length)
+            // Case 1: the IF line contains "... and ...": remove only the feature from the condition
+            if (isFeatureMatch &&
+                trimmed.IndexOf(" and ", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                string trimmed = lines[i].Trim();
-
-                if (Regex.IsMatch(trimmed, @"^if\b", RegexOptions.IgnoreCase))
+                if (!commentAdded)
                 {
-                    bool isFeatureMatch =
-                        Regex.IsMatch(trimmed, featurePattern, RegexOptions.IgnoreCase);
-
-                    if (isFeatureMatch &&
-                        trimmed.IndexOf(" and ", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        if (!commentAdded)
-                        {
-                            output.Add($"// Feature {DeprecatedFeature} is deprecated");
-                            commentAdded = true;
-                        }
-
-                        string updatedLine = Regex.Replace(
-                            lines[i],
-                            featurePattern + @"\s*(and\s*)?",
-                            "",
-                            RegexOptions.IgnoreCase);
-
-                        updatedLine = Regex.Replace(
-                            updatedLine,
-                            @"\(\s*and\s*",
-                            "(",
-                            RegexOptions.IgnoreCase);
-
-                        output.Add(updatedLine);
-                        i++;
-                        continue;
-                    }
-
-                    if (isFeatureMatch && !commentAdded)
-                    {
-                        output.Add($"// Feature {DeprecatedFeature} is deprecated");
-                        commentAdded = true;
-                    }
-
-                    if (isFeatureMatch)
-                    {
-                        i++;
-                        int depth = 1;
-
-                        while (i < lines.Length && depth > 0)
-                        {
-                            trimmed = lines[i].Trim();
-
-                            if (Regex.IsMatch(trimmed, @"^if\b", RegexOptions.IgnoreCase))
-                                depth++;
-                            else if (trimmed.Equals("endIf", StringComparison.OrdinalIgnoreCase))
-                            {
-                                depth--;
-                                i++;
-                                continue;
-                            }
-                            else if (trimmed.Equals("Else", StringComparison.OrdinalIgnoreCase) && depth == 1)
-                            {
-                                i++;
-                                int skipDepth = 1;
-
-                                while (i < lines.Length && skipDepth > 0)
-                                {
-                                    trimmed = lines[i].Trim();
-
-                                    if (Regex.IsMatch(trimmed, @"^if\b", RegexOptions.IgnoreCase))
-                                        skipDepth++;
-                                    else if (trimmed.Equals("endIf", StringComparison.OrdinalIgnoreCase))
-                                        skipDepth--;
-
-                                    i++;
-                                }
-
-                                break;
-                            }
-                            else
-                            {
-                                output.Add(lines[i]);
-                            }
-
-                            i++;
-                        }
-
-                        continue;
-                    }
+                    output.Add($"// Feature {DeprecatedFeature} is deprecated");
+                    commentAdded = true;
                 }
 
-                output.Add(lines[i]);
+                // Remove the feature term, and the neighboring "and" if present
+                string updatedLine = Regex.Replace(
+                    lines[i],
+                    featurePattern + @"\s*(and\s*)?",
+                    "",
+                    RegexOptions.IgnoreCase);
+
+                // Clean up edge-case: "( and" -> "("
+                updatedLine = Regex.Replace(
+                    updatedLine,
+                    @"\(\s*and\s*",
+                    "(",
+                    RegexOptions.IgnoreCase);
+
+                // Clean up dangling "and" before ")"
+                updatedLine = Regex.Replace(
+                    updatedLine,
+                    @"\band\s*\)",
+                    ")",
+                    RegexOptions.IgnoreCase);
+
+                // Also normalize multiple spaces
+                updatedLine = Regex.Replace(updatedLine, @"\s{2,}", " ");
+
+                output.Add(updatedLine);
                 i++;
+                continue;
             }
 
-            return string.Join("\n", output);
+            // Case 2: the IF line matches ONLY the feature check -> unwrap it
+            if (isFeatureMatch)
+            {
+                if (!commentAdded)
+                {
+                    output.Add($"// Feature {DeprecatedFeature} is deprecated");
+                    commentAdded = true;
+                }
+
+                // Skip the 'if ...' line itself (unwrap)
+                i++;
+                int depth = 1;
+
+                while (i < lines.Length && depth > 0)
+                {
+                    string line = lines[i];
+                    string t = line.Trim();
+
+                    // Preserve nested IF/ELSE/ENDIF when depth >= 2
+                    if (Regex.IsMatch(t, @"^if\b", RegexOptions.IgnoreCase))
+                    {
+                        depth++;
+                        if (depth >= 2)
+                        {
+                            // This IF belongs to nested logic—keep it
+                            output.Add(line);
+                        }
+                        i++;
+                        continue;
+                    }
+
+                    // Handle Else
+                    if (t.Equals("Else", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (depth == 1)
+                        {
+                            // Skip the OUTER else branch entirely
+                            i++;
+                            int skipDepth = 1;
+
+                            while (i < lines.Length && skipDepth > 0)
+                            {
+                                string tt = lines[i].Trim();
+
+                                if (Regex.IsMatch(tt, @"^if\b", RegexOptions.IgnoreCase))
+                                    skipDepth++;
+                                else if (tt.Equals("endIf", StringComparison.OrdinalIgnoreCase))
+                                    skipDepth--;
+
+                                i++;
+                            }
+
+                            // Finished unwrapping the outer if
+                            break;
+                        }
+                        else
+                        {
+                            // Nested Else -> keep
+                            output.Add(line);
+                            i++;
+                            continue;
+                        }
+                    }
+
+                    // Handle endIf
+                    if (t.Equals("endIf", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (depth == 1)
+                        {
+                            // Closing the OUTER if—consume and stop
+                            i++;
+                            break;
+                        }
+                        else
+                        {
+                            // Closing a nested if—keep it
+                            output.Add(line);
+                            depth--;
+                            i++;
+                            continue;
+                        }
+                    }
+
+                    // OPTIONAL: Remove braces that belong to the OUTER block only
+                    if (depth == 1 && (t == "{" || t == "}"))
+                    {
+                        i++;
+                        continue;
+                    }
+
+                    // Regular content
+                    output.Add(line);
+                    i++;
+                }
+
+                continue;
+            }
         }
+
+        // Not an if, or not a match—keep as-is
+        output.Add(lines[i]);
+        i++;
+    }
+
+    return string.Join("\n", output);
+}
 
         private DeprecationResponse Fail(string message, string code) =>
             new DeprecationResponse { IsSuccess = false, Message = message, ErrorCode = code };

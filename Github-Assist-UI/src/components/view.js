@@ -42,6 +42,7 @@ const viewerStyles = {
   },
 
   container: {
+    position: "relative", // ✅ So toast can be absolutely positioned inside
     display: "flex",
     flexDirection: "column",
     flex: 1,
@@ -84,6 +85,15 @@ const viewerStyles = {
     fontWeight: 600,
   },
 
+  // Tighter style for icon-only buttons
+  iconBtn: {
+    padding: "6px 8px",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    lineHeight: 0,
+  },
+
   btnDisabled: {
     opacity: 0.6,
     cursor: "not-allowed",
@@ -93,7 +103,7 @@ const viewerStyles = {
     flex: 1,
     minHeight: 0,
     padding: 12,
-    overflow: "auto", // both axes
+    overflow: "auto",
     background: COLORS.blackBg,
     display: "flex",
     flexDirection: "column",
@@ -109,15 +119,14 @@ const viewerStyles = {
 
   pre: {
     margin: 0,
-    whiteSpace: "pre",         // no wrapping
-    overflowX: "auto",         // horizontal scroll
+    whiteSpace: "pre",
+    overflowX: "auto",
     overflowY: "visible",
     display: "block",
     width: "max-content",
     minWidth: "100%",
     maxWidth: "none",
     boxSizing: "border-box",
-
     fontFamily:
       'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace',
     fontSize: 13,
@@ -146,6 +155,35 @@ const viewerStyles = {
     padding: 12,
     color: COLORS.textMuted,
   },
+
+  // ✅ Toast styles
+  // ✅ Centered toast styles
+toast: (type) => ({
+  position: "absolute",
+  top: "4%",
+  left: "75%",
+  transform: "translate(-50%, -50%)",
+  background: type === "error" ? COLORS.errorBg : "rgba(108,168,255,0.12)",
+  border:
+    type === "error"
+      ? `1px solid ${COLORS.errorBorder}`
+      : `1px solid ${COLORS.accentBorder}`,
+  color: type === "error" ? COLORS.errorText : COLORS.accent,
+  padding: "10px 14px",
+  borderRadius: 10,
+  fontSize: 13,
+  boxShadow: `0 10px 28px ${COLORS.shadow}`,
+  pointerEvents: "none",          // let clicks pass through to the viewer
+  opacity: 1,
+  transition: "opacity 180ms ease, transform 180ms ease",
+  backdropFilter: "blur(4px)",    // subtle glass effect (optional)
+}),
+
+toastHidden: {
+  opacity: 0,
+  transform: "translate(-50%, -55%)", // tiny lift on hide
+},
+
 };
 
 /* --------------------------- Viewer Component --------------------------- */
@@ -161,6 +199,22 @@ export function FeatureFileViewer({
 }) {
   const [width, setWidth] = useState(560);
 
+  // ✅ Local toast state
+  const [toast, setToast] = useState(null); // { text, type: 'success' | 'error' }
+  const toastTimer = useRef(null);
+
+  const showToast = (text, type = "success") => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ text, type });
+    toastTimer.current = setTimeout(() => setToast(null), 2200);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    };
+  }, []);
+
   // Restore previous width
   useEffect(() => {
     try {
@@ -172,14 +226,14 @@ export function FeatureFileViewer({
     } catch {}
   }, []);
 
-  // ✅ FIX: Emit width whenever open AND width changes; cleanup emits closed
+  // Emit width whenever open AND width changes; cleanup emits closed
   useEffect(() => {
     if (!open) return;
     window.dispatchEvent(new CustomEvent("viewer:width", { detail: width }));
     return () => {
       window.dispatchEvent(new CustomEvent("viewer:closed"));
     };
-  }, [open, width]); // <-- include 'width' to satisfy ESLint and keep state in sync
+  }, [open, width]);
 
   const dragging = useRef(false);
   const startX = useRef(0);
@@ -231,6 +285,27 @@ export function FeatureFileViewer({
     onClose?.();
   };
 
+  // ✅ Centralized copy handler that also shows a local toast
+  const handleCopyClick = async () => {
+    try {
+      if (onCopy) {
+        // Expect onCopy to return boolean; if undefined, assume success
+        const result = await onCopy();
+        const ok = typeof result === "boolean" ? result : true;
+        if (ok) {
+          showToast("Copied", "success");
+        } else {
+          showToast("Copy failed.", "error");
+        }
+      } else {
+        await navigator.clipboard.writeText(content || "");
+        showToast("Copied file content to clipboard.", "success");
+      }
+    } catch {
+      showToast("Copy failed.", "error");
+    }
+  };
+
   return (
     <section style={viewerStyles.panel(width)} aria-label="File viewer">
       <div
@@ -243,24 +318,69 @@ export function FeatureFileViewer({
       />
 
       <div style={viewerStyles.container}>
+        {/* ✅ Inline toast (top-right) */}
+        {toast && (
+          <div
+            style={{
+              ...viewerStyles.toast(toast.type),
+              ...(toast ? {} : viewerStyles.toastHidden),
+              
+            }}
+            role="status"
+            aria-live="polite"
+          >
+            {toast.text}
+          </div>
+        )}
+
         <div style={viewerStyles.header}>
           <h4 style={viewerStyles.title} title={fileName || "File"}>
             {fileName || "File"}
           </h4>
 
-        <div style={viewerStyles.actions}>
+          <div style={viewerStyles.actions}>
+            {/* Copy Icon Button */}
             <button
               style={{
                 ...viewerStyles.btn,
+                ...viewerStyles.iconBtn,
                 ...(content ? null : viewerStyles.btnDisabled),
               }}
-              onClick={onCopy}
+              onClick={handleCopyClick}
               disabled={!content}
+              aria-label="Copy"
+              title="Copy"
             >
-              Copy
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M16 2H8a2 2 0 0 0-2 2v1H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-1h1a2 2 0 0 0 2-2V6a4 4 0 0 0-4-4zm-1 15v1a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h1v8a2 2 0 0 0 2 2h7zm3-3a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h8a2 2 0 0 1 2 2z" />
+              </svg>
             </button>
-            <button style={viewerStyles.btn} onClick={handleClose}>
-              Close
+
+            {/* Close Icon Button */}
+            <button
+              style={{
+                ...viewerStyles.btn,
+                ...viewerStyles.iconBtn,
+              }}
+              onClick={handleClose}
+              aria-label="Close"
+              title="Close"
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M18.3 5.71a1 1 0 0 0-1.41 0L12 10.59 7.11 5.7a1 1 0 0 0-1.41 1.41L10.59 12l-4.9 4.89a1 1 0 1 0 1.41 1.41L12 13.41l4.89 4.9a1 1 0 0 0 1.41-1.41L13.41 12l4.9-4.89a1 1 0 0 0-.01-1.4z" />
+              </svg>
             </button>
           </div>
         </div>

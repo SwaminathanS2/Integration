@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Link, useLocation } from "react-router-dom";
 import questions from "../data/questions.json";
+import { useChat } from "../ChatContext";
 
 // Pre-deprecation search + card
 import { FeatureFilesCard, searchFeatureFiles } from "../components/search";
@@ -24,7 +25,7 @@ import {
   DEFAULT_FILES_STORAGE_KEY,
 } from "../components/deprecate";
 
-// ⬇️ NEW: PR creation client
+// ⬇️ PR creation client
 import { createPullRequest } from "../components/pullrequest";
 
 /* --------------------------- Config helpers --------------------------- */
@@ -41,6 +42,7 @@ const isYes = (text) => /^y(?:es)?$/i.test((text || "").trim());
 const isNo = (text) => /^n(?:o)?$/i.test((text || "").trim());
 
 export default function Home() {
+  const { setIsChatReady } = useChat();
   const location = useLocation();
 
   // --- State ---
@@ -103,6 +105,7 @@ export default function Home() {
     if (isConfigured) {
       const firstQ = qList[0]?.text || "Please enter input";
       setMessages([{ from: "bot", text: firstQ, ts: Date.now() }]);
+      setIsChatReady(true);
     } else {
       setMessages([
         {
@@ -112,8 +115,9 @@ export default function Home() {
           ts: Date.now(),
         },
       ]);
+      setIsChatReady(false);
     }
-  }, [isConfigured, qList]);
+  }, [isConfigured, qList, setIsChatReady]);
 
   // --- Welcome / splash skip ---
   useEffect(() => {
@@ -150,12 +154,14 @@ export default function Home() {
         },
       ]);
       setCurrentIndex(0);
+      setIsChatReady(false);
       return;
     }
 
     setMessages([{ from: "bot", text: qList[0]?.text || "Please enter input", ts: Date.now() }]);
     setCurrentIndex(0);
-  }, [showWelcome, isConfigured, qList]);
+    setIsChatReady(true);
+  }, [showWelcome, isConfigured, qList, setIsChatReady]);
 
   // --- Reset via location state ---
   const fromState = location.state?.skipWelcome === true;
@@ -184,6 +190,10 @@ export default function Home() {
       clearInterval(t);
     };
   }, []);
+
+  useEffect(()=>{
+    return ()=>{setIsChatReady(false)}; // set chat as not ready when leaving Home
+  }, [setIsChatReady]);
 
   // ✅ One-time connectivity success toast
   useEffect(() => {
@@ -316,9 +326,9 @@ export default function Home() {
   const copyViewerContent = async () => {
     try {
       await navigator.clipboard.writeText(viewerContent || "");
-      setToast({ text: "Copied file content to clipboard.", type: "success" });
+      return true;  // ✅ Let the child know it worked
     } catch {
-      setToast({ text: "Copy failed.", type: "error" });
+      return false; // ✅ Let the child show an error toast
     }
   };
 
@@ -341,11 +351,9 @@ export default function Home() {
   );
 
   const handleGetFS = async (userMsg) => {
-    // Save a normalized feature switch name (trimmed)
     const normalized = (userMsg || "").trim();
     setFeatureName(normalized);
 
-    // Search files in repo for this feature switch (pre-deprecation)
     const files = await searchFeatureFiles(normalized, {
       repoUrl: config.repoUrl,
       token: config.token,
@@ -354,7 +362,6 @@ export default function Home() {
     if (Array.isArray(files) && files.length > 0) {
       setFoundFiles(files);
 
-      // Persist JUST the paths (backend payload requires strings)
       const paths = toFilePaths(files);
       try {
         localStorage.setItem(DEFAULT_FILES_STORAGE_KEY, JSON.stringify(paths));
@@ -362,7 +369,6 @@ export default function Home() {
         // ignore
       }
 
-      // Show files UI card (pre-deprecation)
       setMessages((m) => [
         ...m,
         { from: "bot-ui", type: "feature-files", files, ts: Date.now() },
@@ -375,7 +381,6 @@ export default function Home() {
         { from: "bot", text: "No files with above feature switch name.", ts: Date.now() },
       ]);
 
-      // Restart the flow
       setTimeout(() => {
         setCurrentIndex(0);
         setFeatureName("");
@@ -395,7 +400,7 @@ export default function Home() {
           repoUrl: config.repoUrl,
           token: config.token,
           featureSwitchName: featureName,
-          baseBranch: "dev", // your deprecation workflow base, unchanged
+          baseBranch: "dev",
         });
 
         setDeprecationDone(true);
@@ -406,7 +411,6 @@ export default function Home() {
           { from: "bot", text: "✅ Deprecation completed.", ts: Date.now() },
         ]);
 
-        // Re-run search (POST-DEPRECATION) using search1.js
         try {
           const refreshedFiles = await searchFeatureFilesDeprecated(featureName, {
             repoUrl: config.repoUrl,
@@ -421,7 +425,6 @@ export default function Home() {
               localStorage.setItem(DEFAULT_FILES_STORAGE_KEY, JSON.stringify(refreshedPaths));
             } catch {}
 
-            // Show files UI card again (deprecated title)
             setMessages((m) => [
               ...m,
               {
@@ -445,7 +448,7 @@ export default function Home() {
           ]);
         }
 
-        // Move directly to CreatePR
+        // Move to CreatePR and WAIT for user input there
         askNext(1);
       } catch (err) {
         setMessages((m) => [
@@ -468,7 +471,7 @@ export default function Home() {
     }
   };
 
-  // ⬇️ UPDATED: exact behavior requested for PR step
+  // ✅ CreatePR: After success, move to ApprovePR and WAIT for Yes/No
   const handleCreatePR = async (userMsg) => {
     if (isYes(userMsg)) {
       setMessages((m) => [
@@ -485,11 +488,10 @@ export default function Home() {
           repoUrl: config.repoUrl,
           headBranch,
           baseBranch,
-          apiBase, // reuse same base as other calls
+          apiBase,
         });
 
         if (result?.ok) {
-          // Try to surface a URL if the service returns one
           const prUrl =
             result.data?.html_url ||
             result.data?.url ||
@@ -507,22 +509,17 @@ export default function Home() {
             },
           ]);
 
-          // Continue to next question (ApprovePR)
-          askNext(1);
+          // 👉 DO NOT auto-post more questions; instead move to the next one and wait for user input.
+          askNext(1); // Next is ApprovePR
         } else {
           setMessages((m) => [
             ...m,
-            {
-              from: "bot",
-              text: "Pull request failed to raise.",
-              ts: Date.now(),
-            },
+            { from: "bot", text: "Pull request failed to raise.", ts: Date.now() },
           ]);
           setToast({
             text: result?.error ? `PR creation failed: ${result.error}` : "PR creation failed.",
             type: "error",
           });
-          // stay on the same question so the user can retry or answer again
         }
       } catch (err) {
         setMessages((m) => [
@@ -535,7 +532,6 @@ export default function Home() {
         });
       }
     } else if (isNo(userMsg)) {
-      // If user says No → reset the flow (as requested)
       setMessages((m) => [
         ...m,
         { from: "bot", text: "PR creation skipped. Resetting the flow…", ts: Date.now() },
@@ -549,60 +545,58 @@ export default function Home() {
     }
   };
 
+  // ✅ ApprovePR: Wait for Yes/No, then move to MergePR
   const handleApprovePR = async (userMsg) => {
-    if (isYes(userMsg)) {
-      setMessages((m) => [
-        ...m,
-        {
-          from: "bot",
-          text:
-            "✅ (Placeholder) Assume PR is approved. If you need to automate, connect to your approval workflow.",
-          ts: Date.now(),
-        },
-      ]);
-      askNext(1);
-    } else if (isNo(userMsg)) {
-      setMessages((m) => [...m, { from: "bot", text: "PR approval skipped.", ts: Date.now() }]);
-      askNext(1);
-    } else {
-      setMessages((m) => [
-        ...m,
-        { from: "bot", text: "Please reply with Yes or No.", ts: Date.now() },
-      ]);
-    }
+    // if (isYes(userMsg)) {
+    //   setMessages((m) => [
+    //     ...m,
+    //     { from: "bot", text: "✅ Assuming PR is approved.", ts: Date.now() },
+    //   ]);
+    //   askNext(1); // Move to MergePR
+    // } else if (isNo(userMsg)) {
+    //   setMessages((m) => [
+    //     ...m,
+    //     { from: "bot", text: "PR approval skipped.", ts: Date.now() },
+    //   ]);
+    //   askNext(1); // Still move to MergePR as the next question
+    // } else {
+    //   setMessages((m) => [
+    //     ...m,
+    //     { from: "bot", text: "Please reply with Yes or No.", ts: Date.now() },
+    //   ]);
+    // }
+    askNext(1);
   };
 
+  // ✅ MergePR: Wait for Yes/No, then finish the flow
   const handleMergePR = async (userMsg) => {
-    if (isYes(userMsg)) {
-      setMessages((m) => [
-        ...m,
-        { from: "bot", text: "🔀 (Placeholder) Attempting to merge the PR...", ts: Date.now() },
-      ]);
-      setTimeout(() => {
-        setMessages((m) => [
-          ...m,
-          { from: "bot", text: "🎉 (Placeholder) PR merged successfully.", ts: Date.now() },
-        ]);
-      }, 500);
-    } else if (isNo(userMsg)) {
-      setMessages((m) => [
-        ...m,
-        { from: "bot", text: "Merge skipped. Flow complete.", ts: Date.now() },
-      ]);
-    } else {
-      setMessages((m) => [
-        ...m,
-        { from: "bot", text: "Please reply with Yes or No.", ts: Date.now() },
-      ]);
-      return;
-    }
+    // if (isYes(userMsg)) {
+    //   setMessages((m) => [
+    //     ...m,
+    //     { from: "bot", text: "🎉 (Placeholder) PR merged successfully.", ts: Date.now() },
+    //   ]);
+    // } else if (isNo(userMsg)) {
+    //   setMessages((m) => [
+    //     ...m,
+    //     { from: "bot", text: "Merge skipped. Flow complete.", ts: Date.now() },
+    //   ]);
+    // } else {
+    //   setMessages((m) => [
+    //     ...m,
+    //     { from: "bot", text: "Please reply with Yes or No.", ts: Date.now() },
+    //   ]);
+    //   return;
+    // }
 
+    // Final message
     setTimeout(() => {
       setMessages((m) => [
         ...m,
         { from: "bot", text: "Thanks! All questions are complete. 🎉", ts: Date.now() },
       ]);
-    }, 400);
+      // Advance index beyond questions to avoid further prompts
+      setCurrentIndex(qList.length);
+    }, 300);
   };
 
   /* ------------------ Submit handler (sequential flow) ------------------ */
@@ -624,27 +618,22 @@ export default function Home() {
           await handleGetFS(userMsg);
           break;
         }
-
         case "DeprecationConfirmation": {
           await handleDeprecationConfirmation(userMsg);
           break;
         }
-
         case "CreatePR": {
           await handleCreatePR(userMsg);
           break;
         }
-
         case "ApprovePR": {
           await handleApprovePR(userMsg);
           break;
         }
-
         case "MergePR": {
           await handleMergePR(userMsg);
           break;
         }
-
         default: {
           try {
             await postAnswer({ questionId: question?.id, answer: userMsg });
@@ -713,7 +702,7 @@ export default function Home() {
             boxSizing: "border-box",
           }}
         >
-          {/* Toast */}
+          {/* App-level toast */}
           {toast?.text && (
             <div
               className={`message-box toast-top ${toast.type || "success"}`}
@@ -789,9 +778,6 @@ export default function Home() {
               );
             })}
           </div>
-
-          <div className="progress muted" />
-
           <form className="input-row" onSubmit={onSubmit}>
             <input
               type="text"

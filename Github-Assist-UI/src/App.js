@@ -4,15 +4,19 @@ import { FiSettings, FiRefreshCw } from "react-icons/fi";
 import { AiFillHome } from "react-icons/ai";
 import Home from "./pages/Home";
 import Configure from "./pages/Configure";
+import { ChatProvider } from "./ChatContext";
+import { useChat } from "./ChatContext";
 
 function Sidebar() {
   const navigate = useNavigate();
+  const { isChatReady } = useChat();
 
   // const onRefresh = () => {
   //   navigate("/",{reset:true,skipWelcome:true, resetToken:Date.now()});
   // };
   
 const onRefresh = () => {
+  if(!isChatReady) return; // optionally disable refresh if chat isn’t ready
   navigate("/", {
     replace: true,               // optional: don’t add a new entry in history
     state: {
@@ -63,10 +67,12 @@ const onRefresh = () => {
       <div className="sidebar-bottom">
         <button
           type="button"
-          className="nav-icon refresh"
+          className={`nav-icon refresh ${!isChatReady ? "is-disabled" : ""}`} // optionally add disabled styling
           onClick={onRefresh}
-          title="Reset"
+          title={isChatReady ? "Reset" : "Chat not ready"}
           aria-label="Reset"
+          aria-disabled={!isChatReady}
+          disabled={!isChatReady} // optionally disable button if chat isn’t ready
         >
           <FiRefreshCw size={18} />
         </button>
@@ -78,6 +84,7 @@ const onRefresh = () => {
 
 export default function App() {
   return (
+    <ChatProvider>
     <div className="app-shell">
       <Sidebar />
 
@@ -94,5 +101,6 @@ export default function App() {
         </main>
       </div>
     </div>
+    </ChatProvider>
   );
 }
