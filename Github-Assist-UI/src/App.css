@@ -8,6 +8,14 @@
   --text:#0b1320;
   --muted:#6b7280;
   --shadow: 0 6px 18px rgba(16,24,40,0.08);
+  --toast-bg: #fff;
+  --toast-fg: #111;
+  --toast-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  --toast-radius: 8px;
+  --toast-padding-y: 10px;
+  --toast-padding-x: 14px;
+  --toast-max-width: min(92%, 720px);
+  --toast-z: 10;
 }
 
 *{ box-sizing:border-box }
@@ -180,15 +188,18 @@ input:focus{ border-color:#b7c4ff; box-shadow: 0 0 0 4px rgba(32,80,255,0.12); }
 .chat-container{
   width: 100%;
   max-width: none;
-box-sizing: border-box;
-padding: 16px 16px;
-flex: 1 1 auto;
-min-height: 100%;
-display: flex;
-flex-direction: column;
-gap: 15px;
-align-items: center;
-  
+  box-sizing: border-box;
+  padding: 16px 16px;
+  flex: 1 1 auto;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  align-items: center;
+  position: relative;
+  transition: padding-right 180ms ease;
+  box-sizing: border-box;
+
 }
 
 .messages{
@@ -355,3 +366,61 @@ margin-left:70px; }
   cursor: not-allowed;
 }
  
+/* toast.css */
+
+/* Root-level custom properties for easy theming */
+
+/* Base message box */
+.message-box {
+  box-sizing: border-box;
+  width: max-content;
+  max-width: var(--toast-max-width);
+  padding: var(--toast-padding-y) var(--toast-padding-x);
+  border-radius: var(--toast-radius);
+  box-shadow: var(--toast-shadow);
+  background: var(--toast-bg);
+  color: var(--toast-fg);
+  line-height: 1.3;
+}
+
+/* Positioning at the top, centered horizontally */
+.toast-top {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--toast-z);
+}
+
+/* Type variants (you can adjust colors as you like) */
+.success {
+  --toast-bg: #e9f9ee;
+  --toast-fg: #0f5132;
+  border: 1px solid #bce3c5;
+}
+
+.danger {
+  --toast-bg: #fdecea;
+  --toast-fg: #842029;
+  border: 1px solid #f5c2c7;
+}
+
+.warning {
+  --toast-bg: #fff8e6;
+  --toast-fg: #664d03;
+  border: 1px solid #ffe69c;
+}
+
+.info {
+  --toast-bg: #e7f1ff;
+  --toast-fg: #084298;
+  border: 1px solid #b6d4fe;
+}
+
+/* Optional: responsive tweak if your layout can clip the toast on very small screens */
+@media (max-width: 400px) {
+  .message-box {
+    width: 92%;
+    max-width: 92%;
+  }
+}

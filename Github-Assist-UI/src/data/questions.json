@@ -1,7 +1,32 @@
 [
   { "id": "GetFS", "text": "Please Enter the Feature Switch Name to Deprecate" },
+  { "id": "NoFilesFound", "text": "No files with above feature switch name." },
+ 
   { "id": "DeprecationConfirmation", "text": "Do you want to proceed with Deprecation" },
+  { "id": "start", "text": "Started deprecation process..." },
+  { "id": "end", "text": "Deprecation process completed successfully." },
+  { "id": "DeprecationFailed", "text": "Deprecation failed." },
+  { "id": "DeprecationCancelled", "text": "Okay, deprecation cancelled." },
+ 
+  { "id": "NoFilesAfterDeprecation", "text": "No files found after deprecation." },
+  { "id": "RefreshFailed", "text": "Could not refresh files after deprecation." },
+ 
   { "id": "CreatePR", "text": "Do you want to create a Pull Request" },
+  { "id": "PRStart", "text": "Starting to raise pull request…" },
+  { "id": "PRSuccess", "text": "Pull request raised successfully." },
+  { "id": "PRFailed", "text": "Pull request failed to raise." },
+  { "id": "PRSkipped", "text": "PR creation skipped. Resetting the flow…" },
+ 
   { "id": "ApprovePR", "text": "Please Approve the Pull request" },
-  { "id": "MergePR", "text": "Do you want to Merge your Pull request" }
+  { "id": "ApproveSuccess", "text": "Pull request approved." },
+  { "id": "ApproveSkipped", "text": "PR approval skipped." },
+ 
+  { "id": "MergePR", "text": "Do you want to Merge your Pull request" },
+  { "id": "MergeStart", "text": "Attempting to merge the PR..." },
+  { "id": "MergeSuccess", "text": "Pull request merged successfully." },
+  { "id": "MergeSkipped", "text": "Merge skipped. Flow complete." },
+ 
+  { "id": "YesNo", "text": "Please reply with Yes or No." },
+ 
+  { "id": "Complete", "text": "Process Completed..... Thankyou!!" }
 ]

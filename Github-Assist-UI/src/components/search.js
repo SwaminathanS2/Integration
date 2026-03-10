@@ -75,13 +75,16 @@ const cardStyles = {
 };
 
 /** Presentational card used inside the chat stream. */
-export function FeatureFilesCard({ files, onView }) {
+export function FeatureFilesCard({ files, onView, ariaLabel = "List of Files",}) {
   return (
     <div style={cardStyles.wrapper}>
-      <div style={cardStyles.card} aria-label="Files where the Feature Switch is used">
+    <div
+        style={cardStyles.card}
+        aria-label={ariaLabel}>
+
         <div style={cardStyles.header}>
           {/* Title only (no refresh) */}
-          <h3 style={cardStyles.title}>List of Files where the Feature Switch is Used</h3>
+          <h3 style={cardStyles.title}>{ariaLabel}</h3>
         </div>
 
         <ul style={cardStyles.list}>
